@@ -33,6 +33,7 @@ import java.util.concurrent.locks.LockSupport;
 import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import reactor.core.Fuseable;
 import reactor.core.publisher.DirectProcessor;
@@ -2014,7 +2015,7 @@ public class StepVerifierTests {
 	//see https://github.com/reactor/reactor-core/issues/959
 	@Test
 	public void assertNextWithSubscribeOnDirectProcessor() {
-		Scheduler scheduler = Schedulers.newElastic("test");
+		Scheduler scheduler = Schedulers.newBoundedElastic(1, 100, "test");
 		DirectProcessor<Integer> processor = DirectProcessor.create();
 		Mono<Integer> doAction = Mono.fromSupplier(() -> 22)
 		                             .doOnNext(processor::onNext)
@@ -2209,5 +2210,53 @@ public class StepVerifierTests {
 						::verify)
 				.withMessage("Unexpected error during a no-event expectation: java.lang.IllegalStateException: boom")
 				.withCause(new IllegalStateException("boom"));
+	}
+
+	@Test
+	public void verifyLaterCanVerifyConnectableFlux() {
+		Flux<Integer> autoconnectableFlux = Flux.just(1, 2, 3).publish().autoConnect(2);
+
+		StepVerifier deferred1 = StepVerifier.create(autoconnectableFlux)
+		                                     .expectNext(1, 2, 3)
+		                                     .expectComplete()
+		                                     .verifyLater();
+
+		assertThatExceptionOfType(AssertionError.class)
+				.isThrownBy(() -> deferred1.verify(Duration.ofSeconds(1)))
+				.withMessageContaining("timed out");
+
+		StepVerifier deferred2 = StepVerifier.create(autoconnectableFlux)
+		                                     .expectNext(1, 2, 3)
+		                                     .expectComplete()
+		                                     .verifyLater()
+		                                     .verifyLater()
+		                                     .verifyLater()
+		                                     .verifyLater();
+
+		deferred1.verify(Duration.ofSeconds(1));
+		deferred2.verify(Duration.ofSeconds(1));
+	}
+
+	@Test
+	public void verifyLaterCanVerifyConnectableFlux_withAssertionErrors() {
+		Flux<Integer> autoconnectableFlux = Flux.just(1, 2, 3).publish().autoConnect(2);
+
+		StepVerifier deferred1 = StepVerifier.create(autoconnectableFlux)
+		                                     .expectNext(1, 2, 4)
+		                                     .expectComplete()
+		                                     .verifyLater();
+
+		StepVerifier deferred2 = StepVerifier.create(autoconnectableFlux)
+		                                     .expectNext(1, 2, 5)
+		                                     .expectComplete()
+		                                     .verifyLater();
+
+		assertThatExceptionOfType(AssertionError.class)
+				.isThrownBy(() -> deferred1.verify(Duration.ofSeconds(10)))
+				.withMessage("expectation \"expectNext(4)\" failed (expected value: 4; actual value: 3)");
+
+		assertThatExceptionOfType(AssertionError.class)
+				.isThrownBy(() -> deferred2.verify(Duration.ofSeconds(10)))
+				.withMessage("expectation \"expectNext(5)\" failed (expected value: 5; actual value: 3)");
 	}
 }

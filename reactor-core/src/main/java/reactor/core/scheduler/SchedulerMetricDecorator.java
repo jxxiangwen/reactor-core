@@ -22,7 +22,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
-import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.jvm.ExecutorServiceMetrics;
 import io.micrometer.core.instrument.search.Search;
 
@@ -66,6 +66,8 @@ final class SchedulerMetricDecorator
 				executorDifferentiator.computeIfAbsent(scheduler, key -> new AtomicInteger(0))
 				                      .getAndIncrement();
 
+		Tags tags = Tags.of(TAG_SCHEDULER_ID, schedulerId);
+
 		/*
 		Design note: we assume that a given Scheduler won't apply the decorator twice to the
 		same ExecutorService. Even though, it would simply create an extraneous meter for
@@ -76,13 +78,7 @@ final class SchedulerMetricDecorator
 		to distinguish between two instances with the same name and configuration).
 		 */
 
-		// TODO return the result of ExecutorServiceMetrics#monitor
-		//  once ScheduledExecutorService gets supported by Micrometer
-		//  See https://github.com/micrometer-metrics/micrometer/issues/1021
-		ExecutorServiceMetrics.monitor(globalRegistry, service, executorId,
-				Tag.of(TAG_SCHEDULER_ID, schedulerId));
-
-		return service;
+		return ExecutorServiceMetrics.monitor(globalRegistry, service, executorId, tags);
 	}
 
 	@Override

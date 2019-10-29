@@ -15,6 +15,7 @@
  */
 package reactor.core.publisher;
 
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.function.Supplier;
@@ -47,7 +48,7 @@ import reactor.util.function.Tuples;
  * @param <T> the value type passing through
  * @see <a href="https://github.com/reactor/reactive-streams-commons">https://github.com/reactor/reactive-streams-commons</a>
  */
-final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
+final class FluxOnAssembly<T> extends InternalFluxOperator<T, T> implements Fuseable,
                                                                     AssemblyOp {
 
 	final AssemblySnapshot snapshotStack;
@@ -91,37 +92,27 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 	}
 
 	@SuppressWarnings("unchecked")
-	static <T> void subscribe(CoreSubscriber<? super T> s,
-			Flux<? extends T> source,
-			@Nullable AssemblySnapshot snapshotStack) {
-
+	static <T> CoreSubscriber<? super T> wrapSubscriber(CoreSubscriber<? super T> actual,
+														Flux<? extends T> source,
+														@Nullable AssemblySnapshot snapshotStack) {
 		if(snapshotStack != null) {
-			if (s instanceof ConditionalSubscriber) {
-				ConditionalSubscriber<? super T> cs = (ConditionalSubscriber<? super T>) s;
-				source.subscribe(new OnAssemblyConditionalSubscriber<>(cs,
-						snapshotStack,
-						source));
+			if (actual instanceof ConditionalSubscriber) {
+				ConditionalSubscriber<? super T> cs = (ConditionalSubscriber<? super T>) actual;
+				return new OnAssemblyConditionalSubscriber<>(cs, snapshotStack, source);
 			}
 			else {
-				source.subscribe(new OnAssemblySubscriber<>(s, snapshotStack, source));
+				return new OnAssemblySubscriber<>(actual, snapshotStack, source);
 			}
+		}
+		else {
+			return actual;
 		}
 	}
 
 	@Override
 	@SuppressWarnings("unchecked")
-	public void subscribe(CoreSubscriber<? super T> actual) {
-		if(snapshotStack != null) {
-			if (actual instanceof ConditionalSubscriber) {
-				ConditionalSubscriber<? super T> cs = (ConditionalSubscriber<? super T>) actual;
-				source.subscribe(new OnAssemblyConditionalSubscriber<>(cs,
-						snapshotStack,
-						source));
-			}
-			else {
-				source.subscribe(new OnAssemblySubscriber<>(actual, snapshotStack, source));
-			}
-		}
+	public CoreSubscriber<? super T> subscribeOrReturn(CoreSubscriber<? super T> actual) {
+		return wrapSubscriber(actual, source, snapshotStack);
 	}
 
 	/**
@@ -144,6 +135,13 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 			this(description != null, description, assemblyInformationSupplier);
 		}
 
+		AssemblySnapshot(String assemblyInformation) {
+			this.checkpointed = false;
+			this.description = null;
+			this.assemblyInformationSupplier = null;
+			this.cached = assemblyInformation;
+		}
+
 		private AssemblySnapshot(boolean checkpointed, @Nullable String description, Supplier<String> assemblyInformationSupplier) {
 			this.checkpointed = checkpointed;
 			this.description = description;
@@ -157,6 +155,10 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 
 		public boolean isLight() {
 			return false;
+		}
+
+		public String lightPrefix() {
+			return "";
 		}
 
 		String toAssemblyInformation() {
@@ -174,8 +176,32 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 	static final class AssemblyLightSnapshot extends AssemblySnapshot {
 
 		AssemblyLightSnapshot(@Nullable String description) {
-			super(true, description, () -> "");
+			super(true, description, null);
 			cached = "checkpoint(\"" + description + "\")";
+		}
+
+		@Override
+		public boolean isLight() {
+			return true;
+		}
+
+		@Override
+		public String lightPrefix() {
+			return "checkpoint";
+		}
+
+		@Override
+		String operatorAssemblyInformation() {
+			return cached;
+		}
+
+	}
+
+	static final class MethodReturnSnapshot extends AssemblySnapshot {
+
+		MethodReturnSnapshot(String method) {
+			super(true, method, null);
+			cached = method;
 		}
 
 		@Override
@@ -199,12 +225,8 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 		/** */
 		private static final long serialVersionUID = 5278398300974016773L;
 
-		OnAssemblyException(Publisher<?> parent, AssemblySnapshot ase, String message) {
+		OnAssemblyException(String message) {
 			super(message);
-			//skip the "error seen by" if light (no stack)
-			if (!ase.isLight()) {
-				chainOrder.add(toTuple(parent, Traces.extractOperatorAssemblyInformationParts(message, true), 0));
-			}
 		}
 
 		@Override
@@ -212,16 +234,23 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 			return this;
 		}
 
-		Tuple4<Integer, String, String, Integer> toTuple(Publisher<?> parent, String[] callSite, int depth) {
-			if (callSite.length == 2) {
-				return Tuples.of(parent.hashCode(), callSite[0], callSite[1], depth);
+		void add(Publisher<?> parent, AssemblySnapshot snapshot) {
+			if (snapshot.isLight()) {
+				add(parent, snapshot.lightPrefix(), snapshot.getDescription());
 			}
 			else {
-				return Tuples.of(parent.hashCode(), "checkpoint", callSite[0], depth);
+				String assemblyInformation = snapshot.toAssemblyInformation();
+				String[] parts = Traces.extractOperatorAssemblyInformationParts(assemblyInformation);
+				if (parts.length > 0) {
+					String prefix = parts.length > 1 ? parts[0] : "";
+					String line = parts[parts.length - 1];
+
+					add(parent, prefix, line);
+				}
 			}
 		}
 
-		void add(Publisher<?> parent, String[] callSite) {
+		private void add(Publisher<?> parent, String prefix, String line) {
 			//noinspection ConstantConditions
 			int key = getParentOrThis(Scannable.from(parent));
 			synchronized (chainOrder) {
@@ -243,7 +272,7 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 
 
 				for(;;){
-					Tuple4<Integer, String, String, Integer> t = toTuple(parent, callSite, i);
+					Tuple4<Integer, String, String, Integer> t = Tuples.of(parent.hashCode(), prefix, line, i);
 
 					if(!chainOrder.contains(t)){
 						chainOrder.add(t);
@@ -289,6 +318,7 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 					sb.append(message);
 					sb.append("\n");
 				}
+				sb.append("Stack trace:");
 				return sb.toString();
 			}
 		}
@@ -383,34 +413,45 @@ final class FluxOnAssembly<T> extends FluxOperator<T, T> implements Fuseable,
 				}
 			}
 
-			if (onAssemblyException != null) {
-				final String[] backtrace;
+			if (onAssemblyException == null) {
 				if (lightCheckpoint) {
-					backtrace = new String[] { snapshotStack.getDescription() };
+					onAssemblyException = new OnAssemblyException("");
 				}
 				else {
-					String assemblyInformation = snapshotStack.toAssemblyInformation();
-					backtrace = Traces.extractOperatorAssemblyInformationParts(assemblyInformation, false);
+					StringBuilder sb = new StringBuilder();
+					fillStacktraceHeader(sb, parent.getClass(), snapshotStack.getDescription());
+					sb.append(snapshotStack.toAssemblyInformation().replaceFirst("\\n$", ""));
+					String description = sb.toString();
+					onAssemblyException = new OnAssemblyException(description);
 				}
 
-				onAssemblyException.add(parent, backtrace);
+				t = Exceptions.addSuppressed(t, onAssemblyException);
+				final StackTraceElement[] stackTrace = t.getStackTrace();
+				if (stackTrace.length > 0) {
+					StackTraceElement[] newStackTrace = new StackTraceElement[stackTrace.length];
+					int i = 0;
+					for (StackTraceElement stackTraceElement : stackTrace) {
+						String className = stackTraceElement.getClassName();
 
-				return t;
+						if (className.startsWith("reactor.core.publisher.") && className.contains("OnAssembly")) {
+							continue;
+						}
+
+						newStackTrace[i] = stackTraceElement;
+						i++;
+					}
+					newStackTrace = Arrays.copyOf(newStackTrace, i);
+
+					onAssemblyException.setStackTrace(newStackTrace);
+					t.setStackTrace(new StackTraceElement[] {
+							stackTrace[0]
+					});
+				}
 			}
 
-			if (lightCheckpoint) {
-				onAssemblyException = new OnAssemblyException(parent, snapshotStack, "");
-				onAssemblyException.add(parent, new String[] { snapshotStack.getDescription() });
-			}
-			else {
-				StringBuilder sb = new StringBuilder();
-				fillStacktraceHeader(sb, parent.getClass(), snapshotStack.getDescription());
-				sb.append(snapshotStack.toAssemblyInformation().replaceFirst("\\n$", ""));
-				String description = sb.toString();
-				onAssemblyException = new OnAssemblyException(parent, snapshotStack, description);
-			}
+			onAssemblyException.add(parent, snapshotStack);
 
-			return Exceptions.addSuppressed(t, onAssemblyException);
+			return t;
 		}
 
 		@Override

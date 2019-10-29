@@ -41,8 +41,8 @@ configurations {
 
 dependencies {
   // Reactive Streams
-  compile "org.reactivestreams:reactive-streams:1.0.2"
-  testCompile "org.reactivestreams:reactive-streams-tck:1.0.2"
+  compile "org.reactivestreams:reactive-streams:1.0.3"
+  testCompile "org.reactivestreams:reactive-streams-tck:1.0.3"
 
   // JSR-305 annotations
   optional "com.google.code.findbugs:jsr305:3.0.2"
@@ -56,7 +56,7 @@ dependencies {
   optional("org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}")
 
   //Optional BlockHound support
-  optional 'io.projectreactor.tools:blockhound:1.0.0.M3'
+  optional 'io.projectreactor.tools:blockhound:1.0.0.RELEASE'
 
   //Optional JDK 9 Converter
   jsr166backport "io.projectreactor:jsr166:1.0.0.RELEASE"
@@ -101,7 +101,7 @@ task doDownloadBaseline(type: Download) {
   onlyIfNewer true
   compress true
 
-  src "${repositories.mavenCentral().url}io/projectreactor/reactor-core/$compatibleVersion/reactor-core-${compatibleVersion}.jar"
+  src "${repositories.jcenter().url}io/projectreactor/reactor-core/$compatibleVersion/reactor-core-${compatibleVersion}.jar"
   dest "${buildDir}/baselineLibs/reactor-core-${compatibleVersion}.jar"
 
   finalizedBy { japicmp }
@@ -119,13 +119,6 @@ task japicmp(type: JapicmpTask) {
 
   //TODO after a release, bump the gradle.properties baseline
   //TODO after a release, remove the reactor-core exclusions below if any
-  classExcludes = [
-		  'reactor.core.publisher.WorkQueueProcessor',
-		  'reactor.core.publisher.TopicProcessor',
-		  'reactor.core.publisher.EventLoopProcessor$Slot',
-		  'reactor.util.concurrent.WaitStrategy',
-		  'reactor.core.publisher.MonoProcessor'
-  ]
 //	classExcludes = []
 //	methodExcludes = ["reactor.core.Scannable#operatorName()"]
 }
@@ -138,6 +131,7 @@ javadoc {
 
   options.addStringOption('charSet', 'UTF-8')
 
+  options.addBooleanOption('nodeprecated', true)
   options.memberLevel = org.gradle.external.javadoc.JavadocMemberLevel.PROTECTED
   options.author = true
   options.header = "$project.name"
@@ -214,7 +208,7 @@ task testNoMicrometer(type: Test, group: 'verification') {
 //inherit basic test task + common configuration in root
 //always depend on testStaticInit, skip testNG on Travis, skip loops when not releasing
 //note that this way the tasks can be run individually
-test {
+check {
   dependsOn testStaticInit
   dependsOn testNoMicrometer
   if (System.env.TRAVIS != "true") {

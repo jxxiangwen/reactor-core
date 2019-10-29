@@ -25,6 +25,7 @@ import java.util.stream.Stream;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import reactor.core.CorePublisher;
 import reactor.core.CoreSubscriber;
 import reactor.core.Scannable;
 import reactor.core.scheduler.Scheduler;
@@ -32,8 +33,8 @@ import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 /**
- * retries a source when a companion sequence signals
- * an item in response to the main's error signal
+ * Retries a source when a companion sequence signals
+ * an item in response to the main's error signal.
  * <p>
  * <p>If the companion sequence signals when the main source is active, the repeat
  * attempt is suppressed and any terminal signal will terminate the main source with the same signal immediately.
@@ -41,7 +42,7 @@ import reactor.util.context.Context;
  * @param <T> the source value type
  * @see <a href="https://github.com/reactor/reactive-streams-commons">Reactive-Streams-Commons</a>
  */
-final class FluxRetryWhen<T> extends FluxOperator<T, T> {
+final class FluxRetryWhen<T> extends InternalFluxOperator<T, T> {
 
 	static final Duration MAX_BACKOFF = Duration.ofMillis(Long.MAX_VALUE);
 
@@ -55,7 +56,7 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 
 	static <T> void subscribe(CoreSubscriber<? super T> s, Function<? super
 			Flux<Throwable>, ?
-			extends Publisher<?>> whenSourceFactory, Publisher<? extends T> source) {
+			extends Publisher<?>> whenSourceFactory, CorePublisher<? extends T> source) {
 		RetryWhenOtherSubscriber other = new RetryWhenOtherSubscriber();
 		Subscriber<Throwable> signaller = Operators.serialize(other.completionSignal);
 
@@ -88,8 +89,9 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 	}
 
 	@Override
-	public void subscribe(CoreSubscriber<? super T> actual) {
+	public CoreSubscriber<? super T> subscribeOrReturn(CoreSubscriber<? super T> actual) {
 		subscribe(actual, whenSourceFactory, source);
+		return null;
 	}
 
 	static final class RetryWhenMainSubscriber<T> extends
@@ -99,7 +101,7 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 
 		final Subscriber<Throwable> signaller;
 
-		final Publisher<? extends T> source;
+		final CorePublisher<? extends T> source;
 
 		Context context;
 
@@ -110,7 +112,7 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 		long produced;
 		
 		RetryWhenMainSubscriber(CoreSubscriber<? super T> actual, Subscriber<Throwable> signaller,
-												Publisher<? extends T> source) {
+				CorePublisher<? extends T> source) {
 			super(actual);
 			this.signaller = signaller;
 			this.source = source;
@@ -201,7 +203,7 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 	}
 
 	static final class RetryWhenOtherSubscriber extends Flux<Throwable>
-	implements InnerConsumer<Object> {
+	implements InnerConsumer<Object>, OptimizableOperator<Throwable, Throwable> {
 		RetryWhenMainSubscriber<?> main;
 
 		final DirectProcessor<Throwable> completionSignal = new DirectProcessor<>();
@@ -243,6 +245,21 @@ final class FluxRetryWhen<T> extends FluxOperator<T, T> {
 		@Override
 		public void subscribe(CoreSubscriber<? super Throwable> actual) {
 			completionSignal.subscribe(actual);
+		}
+
+		@Override
+		public CoreSubscriber<? super Throwable> subscribeOrReturn(CoreSubscriber<? super Throwable> actual) {
+			return actual;
+		}
+
+		@Override
+		public DirectProcessor<Throwable> source() {
+			return completionSignal;
+		}
+
+		@Override
+		public OptimizableOperator<?, ? extends Throwable> nextOptimizableSource() {
+			return null;
 		}
 	}
 
